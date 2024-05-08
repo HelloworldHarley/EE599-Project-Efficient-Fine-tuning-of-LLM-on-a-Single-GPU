@@ -160,7 +160,7 @@ def train():
             input_ids = batch['input_ids'].to("cuda")
             labels = batch['labels'].to("cuda")
 
-            logits = model(input_ids)
+            logits = model(input_ids, 0)
 
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
