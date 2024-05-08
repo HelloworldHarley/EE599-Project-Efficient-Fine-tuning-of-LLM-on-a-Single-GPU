@@ -6,8 +6,8 @@ import torch
 def inference():
     torch.manual_seed(1)
 
-    tokenizer_path = "/project/saifhash_1190/llama2-7b/tokenizer.model"
-    model_path = "/project/saifhash_1190/llama2-7b/consolidated.00.pth"
+    tokenizer_path = "/data/leig/llama2-7b/tokenizer.model"
+    model_path = "/data/leig/llama2-7b/consolidated.00.pth"
 
     tokenizer = Tokenizer(tokenizer_path)
 

@@ -39,7 +39,7 @@ class Generation(nn.Module):
                 next_token == tokenizer.eos_id
             )
  
-            prev_pos = cur_pos
+            # prev_pos = cur_pos
             if all(eos_reached):
                 break
 
