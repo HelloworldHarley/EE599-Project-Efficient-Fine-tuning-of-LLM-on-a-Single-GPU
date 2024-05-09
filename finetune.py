@@ -11,6 +11,9 @@ from llama.model import ModelArgs, Llama
 
 IGNORE_INDEX = -100
 
+# Hyperparameters
+gradient_accumulation_step = 8
+
 PROMPT_DICT = {
     "prompt_input": (
         "Below is an instruction that describes a task, paired with an input that provides further context. "
@@ -155,25 +158,55 @@ def train():
     criterion = torch.nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX)
 
     model.train()
+
+    # gradient accumulation version
+    scaler = torch.cuda.amp.GradScaler()
+    
     for epoch in range(5):
-        for batch in dataloader:
+        for i, batch in enumerate(dataloader):
             input_ids = batch['input_ids'].to("cuda")
             labels = batch['labels'].to("cuda")
 
-            logits = model(input_ids, 0)
+            logits = model(input_ids)
 
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            shift_logits = shift_logits.view(-1, 32000)
-            shift_labels = shift_labels.view(-1)
+            # mixed precision training
+            with torch.autocast(device_type='cuda', dtype=torch.float16):
+                shift_logits = logits[..., :-1, :].contiguous()
+                shift_labels = labels[..., 1:].contiguous()
+                shift_logits = shift_logits.view(-1, 32000)
+                shift_labels = shift_labels.view(-1)
 
-            loss = criterion(shift_logits, shift_labels)
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
+                loss = criterion(shift_logits, shift_labels) / gradient_accumulation_step
+            
+            # accumulates scaled gradients
+            scaler.scale(loss).backward()
+            
+            if ((i + 1) % gradient_accumulation_step == 0) or (i + 1 == len(dataloader)):
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
 
             print(loss.item())
 
+    # original version
+    # for epoch in range(5):
+    #     for batch in dataloader:
+    #         input_ids = batch['input_ids'].to("cuda")
+    #         labels = batch['labels'].to("cuda")
+
+    #         logits = model(input_ids)
+
+    #         shift_logits = logits[..., :-1, :].contiguous()
+    #         shift_labels = labels[..., 1:].contiguous()
+    #         shift_logits = shift_logits.view(-1, 32000)
+    #         shift_labels = shift_labels.view(-1)
+
+    #         loss = criterion(shift_logits, shift_labels)
+    #         loss.backward()
+    #         optimizer.step()
+    #         optimizer.zero_grad()
+
+    #         print(loss.item())
 
 if __name__ == "__main__":
     train()
