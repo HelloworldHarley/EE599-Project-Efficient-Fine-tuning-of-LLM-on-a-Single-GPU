@@ -8,10 +8,21 @@ from dataclasses import dataclass
 
 from llama.tokenizer import Tokenizer
 from llama.model import ModelArgs, Llama
+import torch.utils.checkpoint as cp
+
+import time
 
 IGNORE_INDEX = -100
 
 # Hyperparameters
+GA = True
+MP = True
+CP = True
+LoRA = True
+layer_number = 1
+sample_number = 200
+learning_rate = 1e-5
+batch_size = 1
 gradient_accumulation_step = 8
 
 PROMPT_DICT = {
@@ -59,7 +70,7 @@ def preprocess(sources, targets, tokenizer):
 class SupervisedDataset(Dataset):
     """Dataset for supervised fine-tuning."""
 
-    def __init__(self, data_path, tokenizer):
+    def __init__(self, data_path, tokenizer, num_samples=None):
         super(SupervisedDataset, self).__init__()
         logging.warning("Loading data...")
         with open(data_path, "r") as f:
@@ -69,9 +80,9 @@ class SupervisedDataset(Dataset):
         prompt_input, prompt_no_input = PROMPT_DICT["prompt_input"], PROMPT_DICT["prompt_no_input"]
         sources = [
             prompt_input.format_map(example) if example.get("input", "") != "" else prompt_no_input.format_map(example)
-            for example in list_data_dict
+            for example in list_data_dict[:num_samples]
         ]
-        targets = [f"{example['output']}" for example in list_data_dict]
+        targets = [f"{example['output']}" for example in list_data_dict[:num_samples]]
 
         logging.warning("Tokenizing inputs... This may take some time...")
         data_dict = preprocess(sources, targets, tokenizer)
@@ -102,9 +113,9 @@ class DataCollatorForSupervisedDataset(object):
         )
 
 
-def make_supervised_data_module(tokenizer, data_path):
+def make_supervised_data_module(tokenizer, data_path, num_samples=None):
     """Make dataset and collator for supervised fine-tuning."""
-    train_dataset = SupervisedDataset(tokenizer=tokenizer, data_path=data_path)
+    train_dataset = SupervisedDataset(tokenizer=tokenizer, data_path=data_path, num_samples=num_samples)
     data_collator = DataCollatorForSupervisedDataset()
     return dict(train_dataset=train_dataset, eval_dataset=None, data_collator=data_collator)
 
@@ -120,7 +131,7 @@ def train():
     # load model
     checkpoint = torch.load(model_path, map_location="cpu")
     model_args = ModelArgs()
-    model_args.n_layers = 1  # for debugging purposes we only use 1 layer
+    model_args.n_layers = layer_number  # for debugging purposes we only use 1 layer
     # torch.set_default_tensor_type(torch.cuda.HalfTensor) # for training we use fp32 weights
     model = Llama(model_args)
     model.load_state_dict(checkpoint, strict=False)
@@ -130,10 +141,10 @@ def train():
     tokenizer = Tokenizer(tokenizer_path)
 
     # create dataloader
-    data_module = make_supervised_data_module(tokenizer=tokenizer, data_path=data_path)
+    data_module = make_supervised_data_module(tokenizer=tokenizer, data_path=data_path, num_samples=sample_number)
     dataloader = torch.utils.data.DataLoader(
         data_module["train_dataset"],
-        batch_size=1,
+        batch_size=batch_size,
         collate_fn=data_module["data_collator"],
         shuffle=True,
     )
@@ -148,18 +159,21 @@ def train():
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     all_params = sum(p.numel() for p in model.parameters())
     print(
-        f"trainable params: {trainable_params:,d} || "
-        f"all params: {all_params:,d} || "
+        f"GA: {GA} || MP: {MP} || LoRA: {LoRA} || CP: {CP}\n"
+        f"trainable params: {int(trainable_params):,d} || "
+        f"all params: {int(all_params):,d} || "
         f"trainable%: {100 * trainable_params / all_params:.2f}"
     )
 
     # prepare optimizer and loss function
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     criterion = torch.nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX)
+
+    start_time = time.time()
+    torch.cuda.reset_peak_memory_stats()
 
     model.train()
 
-    # gradient accumulation version
     scaler = torch.cuda.amp.GradScaler()
     
     for epoch in range(5):
@@ -167,46 +181,47 @@ def train():
             input_ids = batch['input_ids'].to("cuda")
             labels = batch['labels'].to("cuda")
 
-            logits = model(input_ids)
-
-            # mixed precision training
-            with torch.autocast(device_type='cuda', dtype=torch.float16):
+            # 6. gradient checkpointing (CP)
+            logits = cp.checkpoint(model, input_ids, use_reentrant=False) if CP else model(input_ids)
+            
+            # 4. mixed precision training (MP)
+            with torch.autocast(enabled=MP, device_type='cuda', dtype=torch.float16):
                 shift_logits = logits[..., :-1, :].contiguous()
                 shift_labels = labels[..., 1:].contiguous()
                 shift_logits = shift_logits.view(-1, 32000)
                 shift_labels = shift_labels.view(-1)
-
-                loss = criterion(shift_logits, shift_labels) / gradient_accumulation_step
+                loss = criterion(shift_logits, shift_labels)
             
-            # accumulates scaled gradients
             scaler.scale(loss).backward()
+
+            # 4. accumulates scaled gradients (GA)
+            if GA:
+                loss = loss / gradient_accumulation_step
+                
+                if ((i + 1) % gradient_accumulation_step == 0) or (i + 1 == len(dataloader)):
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad()
             
-            if ((i + 1) % gradient_accumulation_step == 0) or (i + 1 == len(dataloader)):
+            else:
                 scaler.step(optimizer)
                 scaler.update()
-                optimizer.zero_grad()
+                optimizer.zero_grad()         
 
             print(loss.item())
+    
+    end_time = time.time()
+    total_time = end_time - start_time
+    print(f"Total training time: {total_time} seconds")    
 
-    # original version
-    # for epoch in range(5):
-    #     for batch in dataloader:
-    #         input_ids = batch['input_ids'].to("cuda")
-    #         labels = batch['labels'].to("cuda")
+    peak_memory = torch.cuda.max_memory_allocated() / (1024 ** 2)
+    print(f"Peak memory usage during training: {peak_memory:.2f} MB")
 
-    #         logits = model(input_ids)
-
-    #         shift_logits = logits[..., :-1, :].contiguous()
-    #         shift_labels = labels[..., 1:].contiguous()
-    #         shift_logits = shift_logits.view(-1, 32000)
-    #         shift_labels = shift_labels.view(-1)
-
-    #         loss = criterion(shift_logits, shift_labels)
-    #         loss.backward()
-    #         optimizer.step()
-    #         optimizer.zero_grad()
-
-    #         print(loss.item())
+    # save LoRA weights
+    if GA and MP and LoRA and CP:
+        model_weights = model.state_dict()
+        lora_weights = {k: v for k, v in model_weights.items() if "lora_" in k}
+        torch.save(lora_weights, "lora_weights.pth")
 
 if __name__ == "__main__":
     train()

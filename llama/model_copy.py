@@ -12,11 +12,6 @@ from torch import nn
 from llama.generation import Generation
 from llama.lora import LoRA, LoRALayer
 
-# Hyperparameters:
-LORA = True
-r = 16
-alpha = 32
-dropout_rate = 0.05
 
 @dataclass
 class ModelArgs:
@@ -203,10 +198,6 @@ class Attention(nn.Module):
         self.wv = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
         self.wo = nn.Linear(args.n_heads * self.head_dim, args.dim, bias=False)
 
-        # Initialize LoRA layer
-        if LORA:
-            self.lora_layer = LoRA(args.dim, args.dim, r, alpha, dropout_rate)
-
         # self.cache_k = torch.zeros(
         #     (
         #         args.max_batch_size,
@@ -275,11 +266,6 @@ class Attention(nn.Module):
         scores = F.softmax(scores.float(), dim=-1).type_as(xq)
         output = torch.matmul(scores, values)  # (bs, n_local_heads, seqlen, head_dim)
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
-        
-        # Using LoRA
-        if LORA and hasattr(self, 'lora_layer') and self.lora_layer is not None:
-            output = self.lora_layer(output)        
-        
         return self.wo(output)
 
 

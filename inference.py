@@ -6,8 +6,9 @@ import torch
 def inference():
     torch.manual_seed(1)
 
-    tokenizer_path = "/data/leig/llama2-7b/tokenizer.model"
-    model_path = "/data/leig/llama2-7b/consolidated.00.pth"
+    tokenizer_path = "/project/saifhash_1190/llama2-7b/tokenizer.model"
+    model_path = "/project/saifhash_1190/llama2-7b/consolidated.00.pth"
+    lora_weights_path = "lora_weights.pth"
 
     tokenizer = Tokenizer(tokenizer_path)
 
@@ -16,6 +17,13 @@ def inference():
     torch.set_default_tensor_type(torch.cuda.HalfTensor) # load model in fp16
     model = Llama(model_args)
     model.load_state_dict(checkpoint, strict=False)
+    
+    # # LoRA weights
+    # lora_weights = torch.load(lora_weights_path, map_location="cpu")
+    # for name, param in model.named_parameters():
+    #     if name in lora_weights:
+    #         param.data.copy_(lora_weights[name])    
+    
     model.to("cuda")
     
     prompts = [
@@ -31,7 +39,7 @@ def inference():
         """Translate English to French:
         
         sea otter => loutre de mer
-        peppermint => menthe poivrée
+        peppermint => menthe poivrÃ©e
         plush girafe => girafe peluche
         cheese =>""",
     ]
