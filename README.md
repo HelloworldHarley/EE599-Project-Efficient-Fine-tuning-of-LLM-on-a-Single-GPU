@@ -1,5 +1,4 @@
-[![Review Assignment Due Date](https://classroom.github.com/assets/deadline-readme-button-24ddc0f5d75046c5622901739e7c5dd533143b0c8e959d652212380cedb1ea36.svg)](https://classroom.github.com/a/Cs9oCA6b)
-# Final Project EE599 Systems for Machine Learning, Spring 2024
+# Final Project EE599 Systems for Machine Learning
 ### University of Southern California
 ### Instructors: Arash Saifhashemi
 
@@ -19,8 +18,3 @@ Change `model_path` and `tokenizer_path` in `inference.py`
 ```
 python inference.py
 ```
-
-## Deadline:
-* Phase 1: **Apr 12th, 11:59PM**
-* Phase 2: **Apr 22th, 11:59PM**
-* Phase 3: **May 9th, 11:59PM**
